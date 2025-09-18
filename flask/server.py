@@ -75,7 +75,9 @@ def update_line_crossing(cam_name, tracks, img_w, now_ts):
 	# 1. ดึงค่าปัจจุบันของ counter, last_x, last_cross_ts
 	with thread_lock:
 		# TODO: ให้นักเรียนเติม logic สำหรับนับจำนวน track ที่เดินข้ามเส้นกลางภาพ
-		pass
+		counter.setdefault(cam_name, {'L2R':0, 'R2L':0})
+		x_prevs = last_x.setdefault(cam_name, {})
+		ts_prevs = last_cross_ts.setdefault(cam_name, {})
 	
 	# 2. สำหรับแต่ละ track ที่ยืนยันแล้ว (is_confirmed)
 	for track in tracks:
@@ -104,7 +106,16 @@ def update_line_crossing(cam_name, tracks, img_w, now_ts):
 		# - ถ้าข้ามจากซ้ายไปขวา crossed = 'L2R'
 		# - ถ้าข้ามจากขวาไปซ้าย crossed = 'R2L'
 		# - ถ้าไม่ข้าม crossed = None
-		pass
+		if x_prev < line and cx_norm >= line:
+			crossed = 'L2R'
+		elif x_prev > line and cx_norm <= line:
+			crossed = 'R2L'
+		
+		if crossed:
+			ts_prev = ts_prevs.get(tid, 0.0)
+			if now_ts - ts_prev >= CROSS_COOLDOWN:
+				counter[cam_name][crossed] += 1
+				ts_prevs[tid] = now_ts
 
 # ฟังก์ชันประมวลผลภาพ: ตรวจจับ, ติดตาม, นับ, วาดกรอบ
 def yolo_deepsort_process(cam_name, frameB64):
@@ -114,7 +125,7 @@ def yolo_deepsort_process(cam_name, frameB64):
 	r0 = model.predict(
 		frame_bgr,
 		conf=conf, iou=iou, imgsz=imgsz,
-		verbose=False
+		verbose=False #ไม่ต้องการให้โชว์ process
 	)[0]
 
 	# 2. ดึงเฉพาะการตรวจจับที่เป็นคน (class 0)
@@ -122,10 +133,19 @@ def yolo_deepsort_process(cam_name, frameB64):
 	detections = []
 	# TODO: ให้นักเรียนเติม logic สำหรับดึงเฉพาะการตรวจจับที่เป็นคน (class 0)
 	#  โดยเพิ่ม [bounding box], confidence ลงในรายการ detections
+	for box in r0.boxes:
+		if int(box.cls[0]) == 0: # class 0 คือคน
+			x1, y1, x2, y2 = map(int, box.xyxy[0])
+			confidence = float(box.conf[0])
+			detections.append( ([x1, y1, x2, y2], confidence) )
 	
 
 	# 3. ติดตามวัตถุด้วย DeepSort
 	# TODO: ให้นักเรียนเติม logic สำหรับสร้าง DeepSort tracker สำหรับกล้องนี้ (ถ้ายังไม่มี)
+	with thread_lock:
+		if cam_name not in camera_tracker:
+			camera_tracker[cam_name] = make_tracker()
+		tracks = camera_tracker[cam_name].update_tracks(detections, frame=frame_bgr)
 
 	# 4. นับจำนวน track ที่ข้ามเส้น
 	h, w = frame_bgr.shape[:2] # ดึงขนาดภาพ, [:2] คือการตัดเอา list 2 ค่าแรก (สูง, กว้าง)
@@ -162,6 +182,10 @@ def dispatcher_loop():
 		jobs = [] # (cam_name, frameB64), ใช้ frame ล่าสุดใน deque
 		# TODO: ให้นักเรียนเติม logic สำหรับดึง frame ล่าสุดจากแต่ละกล้อง
 		#  โดยใช้ thread_lock เพื่อป้องกัน
+		with thread_lock:
+			for cam_name, dq in camera_frame.items():
+				if dq:
+					jobs.append((cam_name, dq[-1]))
 		
 		if not jobs: continue
 
